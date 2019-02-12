@@ -1,0 +1,12 @@
+repositories {
+    flatDir {
+        dirs '../lib'
+    }
+}
+
+dependencies {
+    compile project(':cordentity-indy-utils')
+    
+    compile group: 'org.slf4j', name: 'slf4j-api', version: '1.8.0-beta2'
+    testCompile group: 'org.slf4j', name: 'slf4j-simple', version: '1.8.0-beta2'
+}
