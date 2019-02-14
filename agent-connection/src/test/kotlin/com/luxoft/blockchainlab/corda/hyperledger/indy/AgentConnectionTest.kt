@@ -13,7 +13,7 @@ class AgentConnectionTest {
     fun `externalTest`() {
         val agent95completed = CompletableFuture<Unit>()
         val agent94completed = CompletableFuture<Unit>()
-        val agent95 = AgentConnection("ws://172.17.0.1:8095/ws")
+        val agent95 = AgentConnection("ws://127.0.0.1:8095/ws")
         val inviteMsg = agent95.genInvite()
         CompletableFuture.runAsync {
             agent95.run {
@@ -28,7 +28,8 @@ class AgentConnectionTest {
             }
         }
 
-        val agent94 = AgentConnection("ws://172.17.0.1:8094/ws", invite = inviteMsg.invite).apply {
+        val agent94 = AgentConnection("ws://127.0.0.1:8094/ws").apply {
+            acceptInvite(inviteMsg)
             sendProof(Proof(emptyList(), "1"))
             sendProof(Proof(emptyList(), "2"))
             sendProof(Proof(emptyList(), "3"))

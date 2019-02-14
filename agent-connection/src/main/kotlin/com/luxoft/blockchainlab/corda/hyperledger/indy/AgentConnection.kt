@@ -19,6 +19,7 @@ import org.java_websocket.client.WebSocketClient
 import org.java_websocket.handshake.ServerHandshake
 import java.lang.Thread.sleep
 import java.net.URI
+import java.time.Instant
 import java.util.*
 import java.util.logging.Level
 import java.util.logging.Logger
@@ -46,22 +47,18 @@ interface Connection {
     fun sendProof(proof: Proof)
     fun receiveProof(): Proof
 
-    fun getInvite(): String
+    fun genInvite(): String
     fun acceptInvite(invite: String)
 }
 
-class AgentConnection(val myAgentUrl: String, val invite: String? = null, val userName: String = "user1", val passphrase: String = "test") : Connection {
-    override fun acceptInvite(invite: String) {
-        TODO("not implemented") //To change body of created functions use File | Settings | File Templates.
-    }
+class AgentConnection(val myAgentUrl: String,
+                      val invite: String? = null,
+                      val userName: String = "user1",
+                      val passphrase: String = "test"
+) : Connection {
+    private val connectionStatus = ConnectionStatus.AGENT_CONNECTION_DISCONNECTED
 
-    override fun getInvite(): String {
-        TODO("not implemented") //To change body of created functions use File | Settings | File Templates.
-    }
-
-    override fun getConnectionStatus(): ConnectionStatus {
-        TODO("not implemented") //To change body of created functions use File | Settings | File Templates.
-    }
+    override fun getConnectionStatus(): ConnectionStatus = connectionStatus
 
     private var counterParty: IndyParty? = null
 
@@ -102,18 +99,24 @@ class AgentConnection(val myAgentUrl: String, val invite: String? = null, val us
     init {
         webSocket.apply {
             connectBlocking()
-            sendJson(WalletConnect(userName, passphrase))
+            sendJson(WalletConnect(userName, passphrase, id = Instant.now().toEpochMilli().toString()))
             if (invite != null) {
-                sendJson(ReceiveInviteMessage(invite))
-                val invite = waitForMessageOfType<InviteReceivedMessage>(INVITE_RECEIVED)
-                sendRequest(invite.key)
-                val response = waitForMessageOfType<RequestResponseReceivedMessage>(RESPONSE_RECEIVED)
-                counterParty = IndyParty(response.their_did, invite.endpoint)
+                acceptInvite(invite)
             }
         }
     }
 
-    data class WalletConnect(val name: String, val passphrase: String, val `@type`: String = CONNECT)
+    override fun acceptInvite(invite: String) {
+        if (invite != null && getConnectionStatus() == ConnectionStatus.AGENT_CONNECTION_CONNECTED) {
+            sendJson(ReceiveInviteMessage(invite))
+            val invite = waitForMessageOfType<InviteReceivedMessage>(INVITE_RECEIVED)
+            sendRequest(invite.key)
+            val response = waitForMessageOfType<RequestResponseReceivedMessage>(RESPONSE_RECEIVED)
+            counterParty = IndyParty(response.their_did, invite.endpoint)
+        }
+    }
+
+    data class WalletConnect(val name: String, val passphrase: String, val `@type`: String = CONNECT, val id: String? = null)
     data class ReceiveInviteMessage(val invite: String, val label: String = "", val `@type`: String = RECEIVE_INVITE)
     data class InviteReceivedMessage(val key: String, val label: String, val endpoint: String, val `@type`: String)
 
@@ -122,7 +125,7 @@ class AgentConnection(val myAgentUrl: String, val invite: String? = null, val us
     data class RequestSendResponseMessage(val did: String, val `@type`: String = SEND_RESPONSE)
     data class RequestResponseReceivedMessage(val their_did: String, val history: JsonObject, val `@type`: String)
 
-    data class SendMessage(val to: String? = null, val message: TypedBodyMessage? = null, val `@type`: String = SEND_MESSAGE)
+    data class SendMessage(val to: String? = null, val message: TypedBodyMessage? = null, val `@type`: String = SEND_MESSAGE, val id: String? = null)
     data class MessageReceivedMessage(val from: String, val timestamp: Number, val content: TypedBodyMessage)
     data class MessageReceived(val id: String, val with: String?, val message: MessageReceivedMessage, val `@type`: String = SEND_MESSAGE)
     data class LoadMessage(val with: String, val `@type`: String = GET_MESSAGES)
@@ -132,9 +135,9 @@ class AgentConnection(val myAgentUrl: String, val invite: String? = null, val us
 
     fun WebSocketClient.sendJson(obj: Any) = send(gson.toJson(obj))
 
-    fun genInvite(): ReceiveInviteMessage {
-        webSocket.sendJson(AgentConnection.SendMessage(`@type` = GENERATE_INVITE))
-        return waitForMessageOfType<AgentConnection.ReceiveInviteMessage>(INVITE_GENERATED)
+    override fun genInvite(): String {
+        webSocket.sendJson(AgentConnection.SendMessage(`@type` = GENERATE_INVITE, id = Instant.now().toEpochMilli().toString()))
+        return waitForMessageOfType<AgentConnection.ReceiveInviteMessage>(INVITE_GENERATED).invite
     }
 
     fun waitForCounterParty() {
