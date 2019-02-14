@@ -28,7 +28,7 @@ class AgentDemo {
     val aliceProvisionConfig = VcxProvisionConfig()
     lateinit var faberConfigDetails: VcxProvisionConfigDetails
     lateinit var aliceConfigDetails: VcxProvisionConfigDetails
-    val INVITE_FILENAME = "/home/joinu/vcx-invite.txt"
+    val INVITE_FILENAME = "/home/schernyshev/vcx-invite.txt"
 
     val TEST_GENESIS_FILE_PATH by lazy { javaClass.classLoader.getResource("docker.txn").file }
     val LOG_LEVEL = "TRACE"

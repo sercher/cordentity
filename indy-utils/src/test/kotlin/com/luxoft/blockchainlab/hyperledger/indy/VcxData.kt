@@ -4,7 +4,7 @@ import com.fasterxml.jackson.annotation.JsonProperty
 import java.util.*
 
 data class VcxProvisionConfig(
-        val agencyUrl: String = "http://10.255.255.21:8080",
+        val agencyUrl: String = "http://127.0.0.1:8080",
         val agencyDid: String = "VsKV7grR1BUE29mG2Fm2kX",
         val agencyVerkey: String = "Hezce2UWMZ3wUhVkh2LfKSs8nDzWwzs2Win7EzNN3YaR",
         val walletName: String = "wallet-${Random().nextInt().shr(1)}",
