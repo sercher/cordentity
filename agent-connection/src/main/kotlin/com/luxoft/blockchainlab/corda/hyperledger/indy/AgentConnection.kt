@@ -14,11 +14,14 @@ import com.luxoft.blockchainlab.corda.hyperledger.indy.AgentConnection.MESSAGE_T
 import com.luxoft.blockchainlab.corda.hyperledger.indy.AgentConnection.MESSAGE_TYPES.Companion.SEND_MESSAGE
 import com.luxoft.blockchainlab.corda.hyperledger.indy.AgentConnection.MESSAGE_TYPES.Companion.SEND_REQUEST
 import com.luxoft.blockchainlab.corda.hyperledger.indy.AgentConnection.MESSAGE_TYPES.Companion.SEND_RESPONSE
+import com.luxoft.blockchainlab.corda.hyperledger.indy.AgentConnection.MESSAGE_TYPES.Companion.STATE_REQUEST
+import com.luxoft.blockchainlab.corda.hyperledger.indy.AgentConnection.MESSAGE_TYPES.Companion.STATE_RESPONSE
 import com.luxoft.blockchainlab.hyperledger.indy.*
 import org.java_websocket.client.WebSocketClient
 import org.java_websocket.handshake.ServerHandshake
 import java.lang.Thread.sleep
 import java.net.URI
+import java.net.URL
 import java.time.Instant
 import java.util.*
 import java.util.logging.Level
@@ -29,6 +32,9 @@ enum class ConnectionStatus { AGENT_CONNECTION_CONNECTED, AGENT_CONNECTION_DISCO
 data class IndyParty(val did: String, val endpoint: String, val verkey: String? = null)
 
 interface Connection {
+    fun genInvite(): String
+    fun acceptInvite(invite: String)
+
     fun getConnectionStatus(): ConnectionStatus
     fun getCounterParty(): IndyParty?
 
@@ -46,17 +52,14 @@ interface Connection {
 
     fun sendProof(proof: Proof)
     fun receiveProof(): Proof
-
-    fun genInvite(): String
-    fun acceptInvite(invite: String)
 }
 
 class AgentConnection(val myAgentUrl: String,
-                      val invite: String? = null,
-                      val userName: String = "user1",
-                      val passphrase: String = "test"
+                      val userName: String,
+                      val passphrase: String,
+                      val invite: String? = null
 ) : Connection {
-    private val connectionStatus = ConnectionStatus.AGENT_CONNECTION_DISCONNECTED
+    private var connectionStatus : ConnectionStatus = ConnectionStatus.AGENT_CONNECTION_DISCONNECTED
 
     override fun getConnectionStatus(): ConnectionStatus = connectionStatus
 
@@ -90,20 +93,52 @@ class AgentConnection(val myAgentUrl: String,
             val RESPONSE_RECEIVED = ADMIN_CONNECTIONS_BASE + "response_received"
 
             val STATE_REQUEST = ADMIN_BASE + "state_request"
+            val STATE_RESPONSE = ADMIN_BASE + "state"
         }
     }
 
     val webSocket = AgentWebSocketClient(URI(myAgentUrl))
     val gson = Gson()
 
+    fun checkState(stateMessage: State?, userName: String) : Boolean {
+        return if(stateMessage != null &&
+                stateMessage.content?.get("initialized") == true &&
+                stateMessage.content?.get("agent_name") == userName ) {
+            connectionStatus = ConnectionStatus.AGENT_CONNECTION_CONNECTED
+            true
+        } else {
+            connectionStatus = ConnectionStatus.AGENT_CONNECTION_DISCONNECTED
+            false
+        }
+    }
+
     init {
+        /**
+         * HTTP GET / in order to let the agent (python indy-agent) know its endpoint address
+         * indy-agent.py is incapable of determining its endpoint other than this way
+         */
+        val uri = URI(myAgentUrl)
+        val rootPath = "http://" + uri.host + ":" + uri.port + "/"
+        val rootUrl = URL(rootPath)
+        val res = rootUrl.openConnection().getInputStream()
+
         webSocket.apply {
             connectBlocking()
-            sendJson(WalletConnect(userName, passphrase, id = Instant.now().toEpochMilli().toString()))
-            if (invite != null) {
+            sendJson(StateRequest())
+            var stateResponse = waitForMessageOfType<State>(STATE_RESPONSE)
+            if(!checkState(stateResponse, userName)) {
+                sendJson(WalletConnect(userName, passphrase, id = Instant.now().toEpochMilli().toString()))
+                stateResponse = waitForMessageOfType<State>(STATE_RESPONSE)
+            }
+            if(checkState(stateResponse, userName) && invite != null) {
                 acceptInvite(invite)
             }
         }
+    }
+
+    override fun genInvite(): String {
+        webSocket.sendJson(AgentConnection.SendMessage(`@type` = GENERATE_INVITE, id = Instant.now().toEpochMilli().toString()))
+        return waitForMessageOfType<AgentConnection.ReceiveInviteMessage>(INVITE_GENERATED).invite
     }
 
     override fun acceptInvite(invite: String) {
@@ -117,6 +152,8 @@ class AgentConnection(val myAgentUrl: String,
     }
 
     data class WalletConnect(val name: String, val passphrase: String, val `@type`: String = CONNECT, val id: String? = null)
+    data class StateRequest(val `@type`: String = STATE_REQUEST)
+    data class State(val `@type`: String = STATE_RESPONSE, val content: Map<String, out Any>? = null)
     data class ReceiveInviteMessage(val invite: String, val label: String = "", val `@type`: String = RECEIVE_INVITE)
     data class InviteReceivedMessage(val key: String, val label: String, val endpoint: String, val `@type`: String)
 
@@ -134,11 +171,6 @@ class AgentConnection(val myAgentUrl: String,
     fun sendJson(obj: Any) = webSocket.sendJson(obj)
 
     fun WebSocketClient.sendJson(obj: Any) = send(gson.toJson(obj))
-
-    override fun genInvite(): String {
-        webSocket.sendJson(AgentConnection.SendMessage(`@type` = GENERATE_INVITE, id = Instant.now().toEpochMilli().toString()))
-        return waitForMessageOfType<AgentConnection.ReceiveInviteMessage>(INVITE_GENERATED).invite
-    }
 
     fun waitForCounterParty() {
         waitForMessageOfType<AgentConnection.RequestReceivedMessage>(REQUEST_RECEIVED).also {
