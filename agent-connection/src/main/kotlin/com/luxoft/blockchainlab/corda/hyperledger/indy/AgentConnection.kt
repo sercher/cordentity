@@ -15,6 +15,8 @@ import com.luxoft.blockchainlab.corda.hyperledger.indy.AgentConnection.MESSAGE_T
 import com.luxoft.blockchainlab.corda.hyperledger.indy.AgentConnection.MESSAGE_TYPES.SEND_MESSAGE
 import com.luxoft.blockchainlab.corda.hyperledger.indy.AgentConnection.MESSAGE_TYPES.SEND_REQUEST
 import com.luxoft.blockchainlab.corda.hyperledger.indy.AgentConnection.MESSAGE_TYPES.SEND_RESPONSE
+import com.luxoft.blockchainlab.corda.hyperledger.indy.AgentConnection.MESSAGE_TYPES.STATE_REQUEST
+import com.luxoft.blockchainlab.corda.hyperledger.indy.AgentConnection.MESSAGE_TYPES.STATE_RESPONSE
 import com.luxoft.blockchainlab.hyperledger.indy.*
 import com.luxoft.blockchainlab.hyperledger.indy.utils.SerializationUtils
 import mu.KotlinLogging
@@ -22,12 +24,20 @@ import org.java_websocket.client.WebSocketClient
 import org.java_websocket.handshake.ServerHandshake
 import java.lang.Thread.sleep
 import java.net.URI
+import java.net.URL
+import java.time.Instant
 import java.util.*
 
+
+enum class ConnectionStatus { AGENT_CONNECTION_CONNECTED, AGENT_CONNECTION_DISCONNECTED }
 
 data class IndyParty(val did: String, val endpoint: String, val verkey: String? = null)
 
 interface Connection {
+    fun genInvite(): String
+    fun acceptInvite(invite: String)
+
+    fun getConnectionStatus(): ConnectionStatus
     fun getCounterParty(): IndyParty?
 
     fun sendCredentialOffer(offer: CredentialOffer)
@@ -46,7 +56,15 @@ interface Connection {
     fun receiveProof(): ProofInfo
 }
 
-class AgentConnection(val myAgentUrl: String, val invite: String? = null, val userName: String = "user1", val passphrase: String = "test") : Connection {
+class AgentConnection(val myAgentUrl: String,
+                      val userName: String = "user1",
+                      val passphrase: String = "test",
+                      val invite: String? = null
+) : Connection {
+
+    private var connectionStatus : ConnectionStatus = ConnectionStatus.AGENT_CONNECTION_DISCONNECTED
+
+    override fun getConnectionStatus(): ConnectionStatus = connectionStatus
 
     private var counterParty: IndyParty? = null
 
@@ -77,29 +95,62 @@ class AgentConnection(val myAgentUrl: String, val invite: String? = null, val us
         val RESPONSE_RECEIVED = ADMIN_CONNECTIONS_BASE + "response_received"
 
         val STATE_REQUEST = ADMIN_BASE + "state_request"
+        val STATE_RESPONSE = ADMIN_BASE + "state"
     }
 
     private val webSocket = AgentWebSocketClient(URI(myAgentUrl))
 
+    fun checkState(stateMessage: State?, userName: String) : Boolean {
+        return if(stateMessage != null &&
+                stateMessage.content?.get("initialized") == true &&
+                stateMessage.content?.get("agent_name") == userName ) {
+            connectionStatus = ConnectionStatus.AGENT_CONNECTION_CONNECTED
+            true
+        } else {
+            connectionStatus = ConnectionStatus.AGENT_CONNECTION_DISCONNECTED
+            false
+        }
+    }
+
     init {
+        /**
+         * HTTP GET / in order to let the agent (python indy-agent) know its endpoint address
+         * indy-agent.py is incapable of determining its endpoint other than this way
+         */
+        val uri = URI(myAgentUrl)
+        val rootPath = "http://" + uri.host + ":" + uri.port + "/"
+        val rootUrl = URL(rootPath)
+        val res = rootUrl.openConnection().getInputStream()
+
         webSocket.apply {
             connectBlocking()
-            sendJson(WalletConnect(userName, passphrase))
-            if (invite != null) {
-                sendJson(ReceiveInviteMessage(invite))
-                val invite = waitForMessageOfType<InviteReceivedMessage>(INVITE_RECEIVED)
-                sendRequest(invite.key)
-                val response = waitForMessageOfType<RequestResponseReceivedMessage>(RESPONSE_RECEIVED)
-                counterParty = IndyParty(response.their_did, invite.endpoint)
+            sendJson(StateRequest())
+            var stateResponse = waitForMessageOfType<State>(STATE_RESPONSE)
+            if(!checkState(stateResponse, userName)) {
+                sendJson(WalletConnect(userName, passphrase, id = Instant.now().toEpochMilli().toString()))
+                stateResponse = waitForMessageOfType<State>(STATE_RESPONSE)
             }
+            if(checkState(stateResponse, userName) && invite != null) {
+                acceptInvite(invite)
+            }
+        }
+    }
+
+    override fun acceptInvite(invite: String) {
+        if (invite != null && getConnectionStatus() == ConnectionStatus.AGENT_CONNECTION_CONNECTED) {
+            sendJson(ReceiveInviteMessage(invite))
+            val invite = webSocket.waitForMessageOfType<InviteReceivedMessage>(INVITE_RECEIVED)
+            sendRequest(invite.key)
+            val response = webSocket.waitForMessageOfType<RequestResponseReceivedMessage>(RESPONSE_RECEIVED)
+            counterParty = IndyParty(response.their_did, invite.endpoint)
         }
     }
 
     fun sendJson(obj: Any) = webSocket.sendJson(obj)
 
-    fun genInvite(): ReceiveInviteMessage {
-        webSocket.sendJson(SendMessage(type = GENERATE_INVITE))
-        return webSocket.waitForMessageOfType<ReceiveInviteMessage>(INVITE_GENERATED)
+    override fun genInvite(): String {
+        webSocket.sendJson(SendMessage(type = GENERATE_INVITE, id = Instant.now().toEpochMilli().toString()))
+        return webSocket.waitForMessageOfType<ReceiveInviteMessage>(INVITE_GENERATED).invite
     }
 
     fun waitForCounterParty() {
@@ -214,16 +265,16 @@ class AgentWebSocketClient(serverUri: URI) : WebSocketClient(serverUri) {
     }
 }
 
-data class WalletConnect(val name: String, val passphrase: String, @JsonProperty("@type") val type: String = CONNECT)
+data class WalletConnect(val name: String, val passphrase: String, @JsonProperty("@type") val type: String = CONNECT, val id: String? = null)
+data class StateRequest(@JsonProperty("@type") val type: String = STATE_REQUEST)
+data class State(@JsonProperty("@type") val type: String = STATE_RESPONSE, val content: Map<String, out Any>? = null)
 data class ReceiveInviteMessage(val invite: String, val label: String = "", @JsonProperty("@type") val type: String = RECEIVE_INVITE)
 data class InviteReceivedMessage(val key: String, val label: String, val endpoint: String, @JsonProperty("@type") val type: String)
-
 data class SendRequestMessage(val key: String, @JsonProperty("@type") val type: String = SEND_REQUEST)
 data class RequestReceivedMessage(val label: String, val did: String, val endpoint: String, @JsonProperty("@type") val type: String)
 data class RequestSendResponseMessage(val did: String, @JsonProperty("@type") val type: String = SEND_RESPONSE)
 data class RequestResponseReceivedMessage(val their_did: String, val history: ObjectNode, @JsonProperty("@type") val type: String)
-
-data class SendMessage(val to: String? = null, val message: TypedBodyMessage? = null, @JsonProperty("@type") val type: String = SEND_MESSAGE)
+data class SendMessage(val to: String? = null, val message: TypedBodyMessage? = null, @JsonProperty("@type") val type: String = SEND_MESSAGE, val id: String? = null)
 data class MessageReceivedMessage(val from: String, val timestamp: Number, val content: TypedBodyMessage)
 data class MessageReceived(val id: String?, val with: String?, val message: MessageReceivedMessage, @JsonProperty("@type") val type: String = SEND_MESSAGE)
 data class LoadMessage(val with: String, @JsonProperty("@type") val type: String = GET_MESSAGES)

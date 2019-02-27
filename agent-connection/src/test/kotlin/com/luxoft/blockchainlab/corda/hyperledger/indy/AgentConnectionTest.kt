@@ -16,7 +16,9 @@ class AgentConnectionTest {
     fun `externalTest`() {
         val agent95completed = CompletableFuture<Unit>()
         val agent94completed = CompletableFuture<Unit>()
-        val agent95 = AgentConnection("ws://10.255.255.21:8095/ws", userName = "user${Random().nextInt()}")
+        val agent95 = AgentConnection("ws://127.0.0.1:8095/ws",
+                "user95",
+                "pass95")
         val inviteMsg = agent95.genInvite()
         CompletableFuture.runAsync {
             agent95.run {
@@ -35,7 +37,10 @@ class AgentConnectionTest {
             agent95completed.complete(Unit)
         }
 
-        val agent94 = AgentConnection("ws://10.255.255.21:8094/ws", invite = inviteMsg.invite, userName = "user${Random().nextInt()}").apply {
+        val agent94 = AgentConnection("ws://127.0.0.1:8094/ws",
+                "user94",
+                "pass94").apply {
+            acceptInvite(inviteMsg)
             sendCredentialOffer(CredentialOffer("1", "", KeyCorrectnessProof("", "", emptyList()), ""))
             sendCredentialOffer(CredentialOffer("2", "", KeyCorrectnessProof("", "", emptyList()), ""))
             sendCredentialOffer(CredentialOffer("3", "", KeyCorrectnessProof("", "", emptyList()), ""))
