@@ -1,6 +1,5 @@
 package com.luxoft.blockchainlab.corda.hyperledger.indy
 
-
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.fasterxml.jackson.databind.node.ObjectNode
 import com.luxoft.blockchainlab.corda.hyperledger.indy.AgentConnection.MESSAGE_TYPES.CONNECT
@@ -24,20 +23,27 @@ import org.java_websocket.client.WebSocketClient
 import org.java_websocket.handshake.ServerHandshake
 import java.lang.Thread.sleep
 import java.net.URI
-import java.net.URL
 import java.time.Instant
 import java.util.*
+import kotlin.RuntimeException
 
 
-enum class ConnectionStatus { AGENT_CONNECTION_CONNECTED, AGENT_CONNECTION_DISCONNECTED }
+enum class AgentConnectionStatus { AGENT_CONNECTION_CONNECTED, AGENT_CONNECTION_DISCONNECTED }
 
 data class IndyParty(val did: String, val endpoint: String, val verkey: String? = null)
 
+class AgentConnectionException(obj: Any) :
+    RuntimeException("Connection exception: $obj")
+
 interface Connection {
+    fun connect(url: String, login: String, password: String) : Connection
+    fun disconnect()
+
     fun genInvite(): String
     fun acceptInvite(invite: String)
+    fun waitForInvitedParty()
 
-    fun getConnectionStatus(): ConnectionStatus
+    fun getConnectionStatus(): AgentConnectionStatus
     fun getCounterParty(): IndyParty?
 
     fun sendCredentialOffer(offer: CredentialOffer)
@@ -56,15 +62,33 @@ interface Connection {
     fun receiveProof(): ProofInfo
 }
 
-class AgentConnection(val myAgentUrl: String,
-                      val userName: String = "user1",
-                      val passphrase: String = "test",
-                      val invite: String? = null
-) : Connection {
+class AgentConnection : Connection {
+    override fun disconnect() {
+        if (getConnectionStatus() == AgentConnectionStatus.AGENT_CONNECTION_CONNECTED) {
+            webSocket.closeBlocking()
+        }
+    }
 
-    private var connectionStatus : ConnectionStatus = ConnectionStatus.AGENT_CONNECTION_DISCONNECTED
+    override fun connect(url: String, login: String, password: String): Connection {
+        disconnect()
+        webSocket = AgentWebSocketClient(URI(url))
+        webSocket.apply {
+            connectBlocking()
+            sendJson(StateRequest())
+            var stateResponse = waitForMessageOfType<State>(STATE_RESPONSE)
+            if(!checkState(stateResponse, login)) {
+                sendJson(WalletConnect(login, password, id = Instant.now().toEpochMilli().toString()))
+                stateResponse = waitForMessageOfType<State>(STATE_RESPONSE)
+            }
+            if(!checkState(stateResponse, login))
+                throw AgentConnectionException("Error connecting to $url")
+        }
+        return this
+    }
 
-    override fun getConnectionStatus(): ConnectionStatus = connectionStatus
+    private var connectionStatus : AgentConnectionStatus = AgentConnectionStatus.AGENT_CONNECTION_DISCONNECTED
+
+    override fun getConnectionStatus(): AgentConnectionStatus = connectionStatus
 
     private var counterParty: IndyParty? = null
 
@@ -98,51 +122,29 @@ class AgentConnection(val myAgentUrl: String,
         val STATE_RESPONSE = ADMIN_BASE + "state"
     }
 
-    private val webSocket = AgentWebSocketClient(URI(myAgentUrl))
+    private var webSocket : AgentWebSocketClient = AgentWebSocketClient(URI(""))
 
-    fun checkState(stateMessage: State?, userName: String) : Boolean {
+    private fun checkState(stateMessage: State?, userName: String) : Boolean {
         return if(stateMessage != null &&
                 stateMessage.content?.get("initialized") == true &&
                 stateMessage.content?.get("agent_name") == userName ) {
-            connectionStatus = ConnectionStatus.AGENT_CONNECTION_CONNECTED
+            connectionStatus = AgentConnectionStatus.AGENT_CONNECTION_CONNECTED
             true
         } else {
-            connectionStatus = ConnectionStatus.AGENT_CONNECTION_DISCONNECTED
+            connectionStatus = AgentConnectionStatus.AGENT_CONNECTION_DISCONNECTED
             false
         }
     }
 
-    init {
-        /**
-         * HTTP GET / in order to let the agent (python indy-agent) know its endpoint address
-         * indy-agent.py is incapable of determining its endpoint other than this way
-         */
-        val uri = URI(myAgentUrl)
-        val rootPath = "http://" + uri.host + ":" + uri.port + "/"
-        val rootUrl = URL(rootPath)
-        val res = rootUrl.openConnection().getInputStream()
-
-        webSocket.apply {
-            connectBlocking()
-            sendJson(StateRequest())
-            var stateResponse = waitForMessageOfType<State>(STATE_RESPONSE)
-            if(!checkState(stateResponse, userName)) {
-                sendJson(WalletConnect(userName, passphrase, id = Instant.now().toEpochMilli().toString()))
-                stateResponse = waitForMessageOfType<State>(STATE_RESPONSE)
-            }
-            if(checkState(stateResponse, userName) && invite != null) {
-                acceptInvite(invite)
-            }
-        }
-    }
-
     override fun acceptInvite(invite: String) {
-        if (invite != null && getConnectionStatus() == ConnectionStatus.AGENT_CONNECTION_CONNECTED) {
+        if (invite != null && getConnectionStatus() == AgentConnectionStatus.AGENT_CONNECTION_CONNECTED) {
             sendJson(ReceiveInviteMessage(invite))
             val invite = webSocket.waitForMessageOfType<InviteReceivedMessage>(INVITE_RECEIVED)
             sendRequest(invite.key)
             val response = webSocket.waitForMessageOfType<RequestResponseReceivedMessage>(RESPONSE_RECEIVED)
             counterParty = IndyParty(response.their_did, invite.endpoint)
+        } else {
+            throw AgentConnectionException("Connection object has wrong state")
         }
     }
 
@@ -153,10 +155,14 @@ class AgentConnection(val myAgentUrl: String,
         return webSocket.waitForMessageOfType<ReceiveInviteMessage>(INVITE_GENERATED).invite
     }
 
-    fun waitForCounterParty() {
-        webSocket.waitForMessageOfType<RequestReceivedMessage>(REQUEST_RECEIVED).also {
-            counterParty = IndyParty(it.did, it.endpoint)
-            sendJson(RequestSendResponseMessage(it.did))
+    override fun waitForInvitedParty() {
+        if (getConnectionStatus() == AgentConnectionStatus.AGENT_CONNECTION_CONNECTED) {
+            webSocket.waitForMessageOfType<RequestReceivedMessage>(REQUEST_RECEIVED).also {
+                counterParty = IndyParty(it.did, it.endpoint)
+                sendJson(RequestSendResponseMessage(it.did))
+            }
+        } else {
+            throw AgentConnectionException("Agent is disconnected")
         }
     }
 
@@ -235,7 +241,7 @@ class AgentWebSocketClient(serverUri: URI) : WebSocketClient(serverUri) {
     }
 
     fun sendTypedMessage(message: TypedBodyMessage, counterParty: IndyParty) = sendJson(SendMessage(counterParty.did, message))
-    inline fun <reified T : Any> sendTypedMessage(message: T, counterParty: IndyParty) = sendJson(sendTypedMessage(TypedBodyMessage(message, T::class.java.canonicalName), counterParty))
+    inline fun <reified T : Any> sendTypedMessage(message: T, counterParty: IndyParty) = sendTypedMessage(TypedBodyMessage(message, T::class.java.canonicalName), counterParty)
     inline fun <reified T : Any> popTypedMessage(): T? {
         synchronized(receivedMessages) {
             val message = receivedMessages
@@ -275,7 +281,7 @@ data class RequestReceivedMessage(val label: String, val did: String, val endpoi
 data class RequestSendResponseMessage(val did: String, @JsonProperty("@type") val type: String = SEND_RESPONSE)
 data class RequestResponseReceivedMessage(val their_did: String, val history: ObjectNode, @JsonProperty("@type") val type: String)
 data class SendMessage(val to: String? = null, val message: TypedBodyMessage? = null, @JsonProperty("@type") val type: String = SEND_MESSAGE, val id: String? = null)
-data class MessageReceivedMessage(val from: String, val timestamp: Number, val content: TypedBodyMessage)
+data class MessageReceivedMessage(val from: String, val sent_time: String, val content: TypedBodyMessage)
 data class MessageReceived(val id: String?, val with: String?, val message: MessageReceivedMessage, @JsonProperty("@type") val type: String = SEND_MESSAGE)
 data class LoadMessage(val with: String, @JsonProperty("@type") val type: String = GET_MESSAGES)
 data class TypedBodyMessage(val message: Any, @JsonProperty("@class") val clazz: String, val correlationId: String = UUID.randomUUID().toString())
