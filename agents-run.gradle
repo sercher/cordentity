@@ -1,0 +1,73 @@
+apply from: "$rootDir/docker.gradle"
+
+String AGENT_IMAGE = "teamblockchain/indy-agent:d64dddf"
+String AGENTS_IP = "172.31.18.170"
+Integer[] AGENT_PORTS = [8094, 8095, 8096, 8097, 8098, 8099]
+
+def getContainerName(String port) {
+    return "indy_agent_docker_$port"
+}
+
+def cleanAgentHomeDirectory(String port) {
+    def name = getContainerName(port)
+    def indy_agent_folder_name = ".$name/"
+    def home = System.getProperty("user.home")
+    delete("$home/$indy_agent_folder_name")
+}
+
+def dockerRunContainer(String image, String host, String port) {
+    def name = getContainerName(port)
+    def ports = "-p $port:$port"
+    def detached_mode = "-dti"
+    def env = "-e PORT=$port -e HOST=$host"
+    def clean = "--rm"
+    def result = "docker run $clean $detached_mode $ports $env --name $name $image".execute()
+    return result.waitFor() == 0
+}
+
+def dockerStopAgent(String port) {
+    def name = getContainerName(port)
+    if (dockerExists(name)) {
+        dockerStopContainer(name)
+        println("DOCKER $name has been STOPED")
+    }
+}
+
+def dockerRunAgent(String image, String host, String port) {
+    def name = getContainerName(port)
+    if (dockerExists(name)) {
+        dockerStopContainer(name)
+        println("DOCKER $name has been STOPED")
+    }
+    if (!dockerExists(name)) {
+        dockerRunContainer(image, host, port)
+        println("DOCKER $name has been STARTED")
+    }
+}
+
+static def dockerStopContainer(String containerName) {
+    def result = "docker kill $containerName".execute()
+    return result.waitFor() == 0
+}
+
+static def dockerExists(String containerName) {
+    def result = "docker inspect $containerName".execute()
+    return result.waitFor() == 0
+}
+
+test.doFirst {
+    AGENT_PORTS.each {
+        cleanAgentHomeDirectory("$it")
+    }
+    AGENT_PORTS.each {
+        dockerRunAgent(AGENT_IMAGE, AGENTS_IP, "$it")
+    }
+}
+test.doLast {
+    AGENT_PORTS.each {
+        dockerStopAgent("$it")
+    }
+    AGENT_PORTS.each {
+        cleanAgentHomeDirectory("$it")
+    }
+}

@@ -13,17 +13,6 @@ import java.net.URL
 import java.nio.file.Paths
 import java.util.*
 
-fun agentInitEndpoint(agentUrl: String) {
-    /**
-     * HTTP GET / in order to let the agent (pythonic indy-agent) know its endpoint address
-     * indy-agent.py is incapable of determining its endpoint other than this way
-     */
-    val uri = URI(agentUrl)
-    val rootPath = "http://${uri.host}:${uri.port}/"
-    val rootUrl = URL(rootPath)
-    rootUrl.openConnection().getInputStream().close()
-}
-
 class PythonRefAgentConnectionTest {
 
     class InvitedPartyProcess (
@@ -34,7 +23,6 @@ class PythonRefAgentConnectionTest {
 
         fun start(invitationString: String) {
             val rand = Random().nextInt()
-            agentInitEndpoint(agentUrl)
             PythonRefAgentConnection().apply {
                 connect(agentUrl, "User$rand", "pass$rand").handle { _, ex ->
                     if (ex != null) {
@@ -62,7 +50,6 @@ class PythonRefAgentConnectionTest {
             val tailsDir = File("tails").apply { deleteOnExit() }
             if (!tailsDir.exists())
                 tailsDir.mkdirs()
-            agentInitEndpoint(agentUrl)
             PythonRefAgentConnection().apply {
                 connect(agentUrl, "User$rand", "pass$rand").toBlocking().value()
                 val invitedPartiesCompleted = mutableListOf<Single<Boolean>>()
@@ -99,9 +86,8 @@ class PythonRefAgentConnectionTest {
             )
     private val masterAgent = "ws://127.0.0.1:8095/ws"
 
-    @Ignore("Requires external services")
     @Test
-    fun `externalTest`() = repeat(Int.MAX_VALUE) {
+    fun `externalTest`() = repeat(10) {
         MasterProcess(masterAgent, invitedPartyAgents).apply { start() }
     }
 }
