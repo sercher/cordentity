@@ -1,7 +1,6 @@
-apply from: "$rootDir/docker.gradle"
 
 String AGENT_IMAGE = "teamblockchain/indy-agent:d64dddf"
-String AGENTS_IP = "172.31.18.170"
+String AGENTS_HOST_IP = "172.17.0.1"
 Integer[] AGENT_PORTS = [8094, 8095, 8096, 8097, 8098, 8099]
 
 def getContainerName(String port) {
@@ -60,7 +59,7 @@ test.doFirst {
         cleanAgentHomeDirectory("$it")
     }
     AGENT_PORTS.each {
-        dockerRunAgent(AGENT_IMAGE, AGENTS_IP, "$it")
+        dockerRunAgent(AGENT_IMAGE, AGENTS_HOST_IP, "$it")
     }
 }
 test.doLast {
