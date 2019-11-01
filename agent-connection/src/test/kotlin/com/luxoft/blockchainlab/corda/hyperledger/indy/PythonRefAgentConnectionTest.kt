@@ -134,7 +134,7 @@ class PythonRefAgentConnectionTest {
             "ws://127.0.0.1:8098/ws",
             "ws://127.0.0.1:8099/ws"
             )
-    private val masterAgent = "ws://127.0.0.1:8092/ws"
+    private val masterAgent = "ws://127.0.0.1:8095/ws"
 
     @Test
     fun `externalTest`() = repeat(10) {
@@ -415,7 +415,7 @@ class PythonRefAgentConnectionTest {
             "ws://127.0.0.1:8089/ws"
     )
     private val proxiesConfig = listOf(
-            Pair(8084, 8093),
+            Pair(8084, 8094),
             Pair(8086, 8096),
             Pair(8087, 8097),
             Pair(8088, 8098),
@@ -426,8 +426,10 @@ class PythonRefAgentConnectionTest {
         val proxies = RandomFailuresProcess(proxiesConfig).apply { start() }
         repeat(200) {
             val master = MasterProcess(masterAgent, invitedPartyAgentsProxies).apply { start() }
-            if (!master.testOk)
+            if (!master.testOk) {
+                proxies.stop()
                 throw AgentConnectionException("Master process didn't complete Ok")
+            }
         }
         proxies.stop()
     }

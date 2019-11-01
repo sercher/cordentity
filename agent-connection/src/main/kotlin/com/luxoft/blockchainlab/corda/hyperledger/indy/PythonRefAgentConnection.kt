@@ -43,6 +43,7 @@ class PythonRefAgentConnection : AgentConnection {
     private var operationTimeoutMs: Long = 60000
     private val isReconnecting = AtomicBoolean(false)
     private val stopReconnecting = AtomicBoolean(false)
+    private val isHandshake = AtomicBoolean(false)
     private lateinit var onCloseSubscription: Subscription
     private lateinit var onReconnectSubscription: Subscription
 
@@ -56,33 +57,39 @@ class PythonRefAgentConnection : AgentConnection {
          * Check the agent's current state.
          * The agent will respond with the "state" message
          */
-        var checker: ((State)->Unit)? = null
-        val handler: (Throwable)->Unit = {
-            log.error { "!!!Handshake failure: $it" }
-            observer.onError(it)
-        }
-        checker = { stateResponse ->
-            if (!checkUserLoggedIn(stateResponse, login)) {
-                webSocket.receiveMessageOfType<State>(MESSAGE_TYPES.STATE_RESPONSE)
-                    .timeout(operationTimeoutMs, TimeUnit.MILLISECONDS)
-                    .subscribe( checker, handler)
-                /**
-                 * If the agent is logged in by different user, send the "connect" request
-                 * to take over the connection
-                 */
-                sendAsJson(WalletConnect(login, password))
-            } else {
-                observer.onNext(Unit)
+        if (isHandshake.compareAndSet(false, true)) {
+            log.info { "Attempting handshake ($login @ $url)..." }
+            var checker: ((State)->Unit)? = null
+            val handler: (Throwable)->Unit = {
+                log.error { "!!!Handshake failure: $it" }
+                isHandshake.set(false)
+                observer.onError(it)
             }
+            checker = { stateResponse ->
+                if (!checkUserLoggedIn(stateResponse, login)) {
+                    webSocket.receiveMessageOfType<State>(MESSAGE_TYPES.STATE_RESPONSE)
+                        .timeout(operationTimeoutMs, TimeUnit.MILLISECONDS)
+                        .subscribe( checker, handler)
+                    /**
+                     * If the agent is logged in by different user, send the "connect" request
+                     * to take over the connection
+                     */
+                    sendAsJson(WalletConnect(login, password))
+                } else {
+                    log.info { "Finished handshake ($login @ $url)." }
+                    isHandshake.set(false)
+                    observer.onNext(Unit)
+                }
+            }
+            webSocket.receiveMessageOfType<State>(MESSAGE_TYPES.STATE_RESPONSE)
+                .timeout(operationTimeoutMs, TimeUnit.MILLISECONDS)
+                .subscribe(checker, handler)
+            /**
+             * Send the state request
+             */
+            log.info { "!!!Sending a state request" }
+            sendAsJson(StateRequest())
         }
-        webSocket.receiveMessageOfType<State>(MESSAGE_TYPES.STATE_RESPONSE)
-            .timeout(operationTimeoutMs, TimeUnit.MILLISECONDS)
-            .subscribe(checker, handler)
-        /**
-         * Send the state request
-         */
-        log.info { "!!!Sending a state request" }
-        sendAsJson(StateRequest())
     }
 
     /**
@@ -107,7 +114,7 @@ class PythonRefAgentConnection : AgentConnection {
                                     if (!webSocket.reconnectBlocking())
                                         throw AgentConnectionException(webSocket.reason ?: "Error connecting to $url")
                                     else {
-                                        log.info { "Reconnected $login to $url. Attempting handshake..." }
+                                        log.info { "Reconnected $login to $url." }
                                         doHandshake(connectionObserver)
                                     }
                                 }
@@ -247,19 +254,24 @@ class PythonRefAgentConnection : AgentConnection {
                     }
                 } catch (e: Throwable) {
                     log.error { "Exception while connecting to $url: ${e.localizedMessage}" }
+                    connectionObserver.onError(e)
                 }
             }.subscribeOn(Schedulers.newThread()).apply {
                 timeout(operationTimeoutMs, TimeUnit.MILLISECONDS).subscribe({
+//                    webSocket.onCloseAddObserver().subscribe { isRemote ->
+//                        connectionStatus = AgentConnectionStatus.AGENT_DISCONNECTED
+//                        doReconnect(false) // reconnect in non-blocking mode
+//                    }
+//                    webSocket.onReconnectAddObserver().subscribe { isBlocking ->
+//                        doReconnect(isBlocking)
+//                    }
                     if (pollAgentWorker?.isAlive != true)
                         pollAgentWorker = createAgentWorker()
                     resultObserver.onSuccess(it)
                     resultObserver.unsubscribe()
                 }, {
                     if (!resultObserver.isUnsubscribed)
-                        if (it is TimeoutException)
-                            resultObserver.onError(it)
-                        else
-                            log.error { "!!!Failure connecting to $url: ${it.localizedMessage}" }
+                        resultObserver.onError(it)
                 })
             }
         }
